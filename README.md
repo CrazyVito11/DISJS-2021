@@ -19,7 +19,7 @@ $ node main.js <path_goes_here>
 ```
 This will work just fine, but there might be some settings you want to tweak to get the most out of this application.
 
-###Threads
+### Threads
 By default, the application will use **4** threads. This means it could use all of your PC or only a fraction of it, depending on your CPU.
 
 You can get the fastest performance by using the same amount of threads your CPU has, at the cost of more RAM and less performance available for the rest of the system.
