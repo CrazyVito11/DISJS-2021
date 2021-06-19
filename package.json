@@ -1,0 +1,20 @@
+{
+  "name": "disjs-2021",
+  "version": "1.0.0",
+  "description": "A simple application that scans a directory for duplicate images using NodeJS and ResembleJS",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "CrazyVito11",
+  "license": "ISC",
+  "repository": "https://github.com/CrazyVito11/DISJS-2021",
+  "dependencies": {
+    "@types/resemblejs": "^3.2.0",
+    "canvas": "^2.8.0",
+    "cli-progress": "^3.9.0",
+    "resemblejs": "^3.2.5",
+    "spark-md5": "^3.0.1",
+    "yargs": "^17.0.1"
+  }
+}
