@@ -2,7 +2,6 @@ const fs          = require('fs');
 const path        = require('path');
 const cliProgress = require('cli-progress');
 const { fork }    = require('child_process');
-const SparkMD5    = require('spark-md5');
 const yargs       = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const argv        = yargs(hideBin(process.argv)).argv;
@@ -18,6 +17,13 @@ if (! fs.existsSync(directoryToScan)) {
     console.error("Directory not found, exiting...");
 
     return;
+}
+
+let sessionData = null;
+if (argv.session) {
+    console.log('Reading session file...');
+    sessionData = JSON.parse(fs.readFileSync(argv.session));
+    console.log('Session file loaded');
 }
 
 let threads = 4;
@@ -38,90 +44,181 @@ const supportedFiletypes = [
     '.bmp',
 ];
 
-console.log(`Searching for images in ${directoryToScan}`);
+// if (! sessionData) {
+    console.log(`Searching for images in ${directoryToScan}`);
 
-(function searchDirectory(dir = directoryToScan){
-    let files = fs.readdirSync(dir);
-    for (let file of files) {
-        let stat = fs.lstatSync(path.join(dir, file));
-        if (stat.isDirectory()) {
-            searchDirectory(path.join(dir, file));
-        } else {
-            if (supportedFiletypes.includes(path.extname(file).toLowerCase())) {
-                images.push({
-                    path: path.join(dir, file),
-                    hash: SparkMD5.hash(fs.readFileSync(path.join(dir, file)))
-                });
+    (function searchDirectory(dir = directoryToScan) {
+        let files = fs.readdirSync(dir);
+        for(let file of files) {
+            let stat = fs.lstatSync(path.join(dir, file));
+            if (stat.isDirectory()) {
+                searchDirectory(path.join(dir, file));
+            } else {
+                if (supportedFiletypes.includes(path.extname(file).toLowerCase())) {
+                    images.push(path.join(dir, file));
+                }
             }
         }
-    }
-})();
+    })();
 
-console.log(`Found ${images.length} image(s)`);
-
-let progressCounter     = 0;
-let progressTotal       = (images.length) * (images.length);
-let children            = [];
-let duplicates          = [];
-let alreadyCheckedFiles = [];
-const startTimeStamp    = new Date();
-const progress          = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
+    console.log(`Found ${images.length} image(s)`);
+// }
+console.log(`Generating hashes`);
 
 
-console.log(`Starting scan using ${threads} thread(s)`);
-progress.start(progressTotal);
 
-for (let threadIndex = 0; threadIndex < threads; threadIndex++) {
-    const child       = fork(`${__dirname}/scanner-child.js`);
-    const chunkSize   = Math.ceil(images.length / threads);
-    const offset      = Math.floor(threadIndex * chunkSize);
-    const chunkImages = images.slice(offset, offset + chunkSize);
+addHashToImagesList(images, threads)
+    .then((imagesHashed) => {
+        console.log(
+            'we hashed those images'
+        );
+        scanImagesForDuplicates(imagesHashed)
+            .then(() => {
+                console.log("*dies*");
+            })
+    })
 
-    children[threadIndex] = child;
 
-    if (! chunkImages.length) {
-        child.kill();
 
-        continue;
-    }
+// const writeToSessionFile = setInterval(async () => {
+//     const fileContent = {
+//         directoryToScan: directoryToScan,
+//         progress: {
+//             total: progressTotal,
+//             current: progressCounter
+//         },
+//         currentlyScanning: currentlyScanning,
+//         imagesLeftToScan: imagesLeftToScan,
+//         duplicates: duplicates,
+//         alreadyScannedFiles: alreadyScannedFiles
+//     };
+//
+//     fs.writeFileSync(path.join(__dirname, 'session.json'), JSON.stringify(fileContent));
+// }, 10000000)
 
-    child.send({ type: 'begin', allImages: images, imagesToCheck: chunkImages });
-    child.on("message",(data) => {
-        if (data.type === 'progress') {
-            progressCounter += 1;
-            progress.update(progressCounter);
-        } else if (data.type === 'checkedfile') {
-            alreadyCheckedFiles.push(data.files);
-        } else if (data.type === 'duplicate') {
-            duplicates.push({ files: data.files, misMatchPercentage: data.misMatchPercentage });
-        } else if (data.type === 'finished') {
-            child.kill();
+
+
+
+
+
+async function addHashToImagesList(images, threads) {
+    let imagesHashed = [];
+
+    return new Promise((resolve) => {
+        for(let threadIndex = 0; threadIndex < threads; threadIndex++) {
+            const child       = fork(`${__dirname}/hasher-child.js`);
+            const chunkSize   = Math.ceil(images.length / threads);
+            const offset      = Math.floor(threadIndex * chunkSize);
+            const chunkImages = images.slice(offset, offset + chunkSize);
+
+            if (!chunkImages.length) {
+                child.kill();
+
+                continue;
+            }
+
+            child.send({ type: 'begin', images: chunkImages });
+            child.on("message", (data) => {
+                if (data.type === 'finished') {
+                    imagesHashed = imagesHashed.concat(data.files);
+
+                    child.kill();
+                }
+            });
         }
+
+        setInterval(() => {
+            if (imagesHashed.length === images.length) {
+                resolve(imagesHashed);
+            }
+        })
     });
 }
 
-const waitForCompletion = setInterval(() => {
-    const hasActiveChild = children.find((child) => {
-        return ! child.killed;
-    }) !== undefined;
+async function scanImagesForDuplicates(images) {
+    let progressCounter     = sessionData ? sessionData.progress.current : 0;
+    let progressTotal       = sessionData ? sessionData.progress.total : images.length;
+    let duplicates          = sessionData ? sessionData.duplicates : [];
+    let alreadyScannedFiles = sessionData ? sessionData.alreadyScannedFiles : [];
+    let currentlyScanning   = sessionData ? sessionData.currentlyScanning : [];
+    let imagesLeftToScan    = sessionData ? sessionData.imagesLeftToScan : images;
 
-    if (! hasActiveChild) {
-        clearInterval(waitForCompletion);
-        progress.stop();
+    let children            = [];
+    const startTimeStamp    = new Date();
+    const progress          = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
 
-        console.log(`Duplicates:\n${JSON.stringify(duplicates)}`);
 
-        var timeTook = (new Date().getTime() - startTimeStamp.getTime());
-        console.log(`Scan took ${timeTook}ms`);
-    } else {
-        children.forEach((child, index) => {
-            if (child.connected) {
-                try {
-                    child.send({ type: `alreadychecked`, alreadyCheckedFiles: alreadyCheckedFiles })
-                } catch(e) {
-                    console.error(`Unable to send checked list to child #${index}`);
+    console.log(`Starting scan using ${threads} thread(s)`);
+    progress.start(progressTotal);
+    progress.update(progressCounter);
+
+    for (let threadIndex = 0; threadIndex < threads; threadIndex++) {
+        // const child = fork(`${__dirname}/scanner-child.js`, { execArgv:["--prof"] });
+        const child = fork(`${__dirname}/scanner-child.js`);
+
+        children[threadIndex] = child;
+
+        child.on("message",(data) => {
+            if (data.type === 'result') {
+                alreadyScannedFiles.push(data.files);
+
+                if (data.misMatchPercentage < 50) {
+                    duplicates.push({ files: data.files, misMatchPercentage: data.misMatchPercentage });
                 }
+            } else if (data.type === 'finished') {
+                progressCounter += 1
+                progress.update(progressCounter);
+
+                currentlyScanning.some((currentScan, index) => {
+                    if (
+                        currentScan.path === data.file.path &&
+                        currentScan.hash === data.file.hash
+                    ) {
+                        currentlyScanning.splice(index, 1);
+                    }
+                })
+
+                sendNewCompareTaskToChild(child);
             }
-        })
+        });
+        sendNewCompareTaskToChild(child);
     }
-}, 500);
+
+    const waitForCompletion = setInterval(() => {
+        const hasActiveChild = children.find((child) => {
+            return ! child.killed;
+        }) !== undefined;
+
+        if (! hasActiveChild) {
+            clearInterval(waitForCompletion);
+            //clearInterval(writeToSessionFile);
+            progress.stop();
+
+            console.log(`Duplicates:\n${JSON.stringify(duplicates)}`);
+
+            let timeTook = (new Date().getTime() - startTimeStamp.getTime());
+            console.log(`Scan took ${timeTook}ms`);
+        }
+    }, 250);
+
+    function sendNewCompareTaskToChild(child) {
+        let imageToCheck = imagesLeftToScan[0];
+
+        if (! imageToCheck) {
+            console.log(`No more work left, killing thread`);
+            child.kill();
+
+            return;
+        }
+
+        imagesLeftToScan.splice(0, 1);
+        currentlyScanning.push(imageToCheck);
+
+        child.send({
+            type: 'checkfile',
+            allImages: images,
+            alreadyScannedFiles: alreadyScannedFiles,
+            imageToCheck: imageToCheck
+        });
+    }
+}
