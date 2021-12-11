@@ -50,6 +50,11 @@ TODO: Implement thumbnail generation by default and document feature
 
 
 
+### Todo
+- Paths relatief maken (voor het geval dat de map is verplaatst)
+- Session file functionaliteit implementeren
+- Van te voren de bekende duplicates er uit filteren (hash matched, ignored combinations)
+- Child processes verplaatsen naar losse map en hernoemen
 
 ### Mogelijke performance verbeteringen
 - Alle afbeeldingen omzetten tot een thumbnail formaat en dumpen in hidden folder ofzo

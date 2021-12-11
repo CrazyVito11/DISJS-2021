@@ -19,10 +19,20 @@ if (! fs.existsSync(directoryToScan)) {
     return;
 }
 
+const disjsFolderName                = ".disjs";                                               // Main disjs folder name
+const disjsFolderPath                = path.join(directoryToScan, `/${disjsFolderName}`);      // Main disjs folder where disjs data is stored
+const disjsThumbnailPath             = path.join(disjsFolderPath, "/thumbnails");              // Folder where the thumbnail versions are stored of the images
+const disjsNotDuplicatesFilePath     = path.join(disjsFolderPath, "/not_duplicates.json");     // Image combinations that are scanned before and are known to not be duplicates
+const disjsIgnoredDuplicatesFilePath = path.join(disjsFolderPath, "/ignored_duplicates.json"); // Image combinations that the user said are not duplicates
+const disjsSessionFilePath           = path.join(disjsFolderPath, "/session.json");            // Optional restore file in case the application crashes mid scan
+if (! fs.existsSync(disjsFolderPath)) {
+    fs.mkdirSync(disjsFolderPath);
+}
+
 let sessionData = null;
-if (argv.session) {
+if (fs.existsSync(disjsSessionFilePath)) {
     console.log('Reading session file...');
-    sessionData = JSON.parse(fs.readFileSync(argv.session));
+    //sessionData = JSON.parse(fs.readFileSync(disjsSessionFilePath));
     console.log('Session file loaded');
 }
 
@@ -44,12 +54,14 @@ const supportedFiletypes = [
     '.bmp',
 ];
 
-// if (! sessionData) {
+if (! sessionData) {
     console.log(`Searching for images in ${directoryToScan}`);
 
     (function searchDirectory(dir = directoryToScan) {
         let files = fs.readdirSync(dir);
         for(let file of files) {
+            if (file === disjsFolderName) continue;
+
             let stat = fs.lstatSync(path.join(dir, file));
             if (stat.isDirectory()) {
                 searchDirectory(path.join(dir, file));
@@ -62,39 +74,60 @@ const supportedFiletypes = [
     })();
 
     console.log(`Found ${images.length} image(s)`);
-// }
+}
+
 console.log(`Generating hashes`);
-
-
-
 addHashToImagesList(images, threads)
     .then((imagesHashed) => {
-        console.log(
-            'we hashed those images'
-        );
-        scanImagesForDuplicates(imagesHashed)
+        console.log('Generating thumbnails');
+
+        // todo: hier eerst kijken naar hash duplicates en die er uit filteren
+        generateThumbnails(imagesHashed)
             .then(() => {
-                console.log("*dies*");
-            })
+                console.log('Scanning for duplicates');
+
+                scanImagesForDuplicates(imagesHashed)
+                    .then((result) => {
+                        const filteredResults = result.results.filter((resultItem) => resultItem.misMatchPercentage < 50);
+
+                        if (filteredResults.length === 0) {
+                            console.log(`Scanning took ${result.timeTook}ms`);
+                            console.log("No duplicates found ;)");
+
+                            return process.exit();
+                        }
+
+                        const resultsTextFilePath = path.join(disjsFolderPath, "/result.txt");
+                        let resultsAsText         = `Scanning took ${result.timeTook}ms\nThe following ${filteredResults.length} file(s) might be duplicates:\n`;
+                        filteredResults.forEach((resultItem) => {
+                            resultsAsText += `\n-\n   File #1: ${resultItem.combination[0].originalPath}\n   File #2: ${resultItem.combination[1].originalPath}\n   Mismatch: ${resultItem.misMatchPercentage}%`;
+                        });
+
+                        fs.writeFileSync(resultsTextFilePath, resultsAsText);
+                        console.log(`${resultsAsText}\n\nYou can also find the results in ${resultsTextFilePath}`);
+
+                        process.exit();
+                    });
+            });
     })
 
 
 
 // const writeToSessionFile = setInterval(async () => {
 //     const fileContent = {
-//         directoryToScan: directoryToScan,
-//         progress: {
+//         dts: directoryToScan,
+//         p: {
 //             total: progressTotal,
 //             current: progressCounter
 //         },
-//         currentlyScanning: currentlyScanning,
-//         imagesLeftToScan: imagesLeftToScan,
-//         duplicates: duplicates,
-//         alreadyScannedFiles: alreadyScannedFiles
+//         cs: currentlyScanning,
+//         ilts: imagesLeftToScan,
+//         d: duplicates,
+//         asf: alreadyScannedFiles
 //     };
 //
 //     fs.writeFileSync(path.join(__dirname, 'session.json'), JSON.stringify(fileContent));
-// }, 10000000)
+// }, 60000);
 
 
 
@@ -131,94 +164,94 @@ async function addHashToImagesList(images, threads) {
             if (imagesHashed.length === images.length) {
                 resolve(imagesHashed);
             }
-        })
+        }, 100)
     });
 }
 
-async function scanImagesForDuplicates(images) {
-    let progressCounter     = sessionData ? sessionData.progress.current : 0;
-    let progressTotal       = sessionData ? sessionData.progress.total : images.length;
-    let duplicates          = sessionData ? sessionData.duplicates : [];
-    let alreadyScannedFiles = sessionData ? sessionData.alreadyScannedFiles : [];
-    let currentlyScanning   = sessionData ? sessionData.currentlyScanning : [];
-    let imagesLeftToScan    = sessionData ? sessionData.imagesLeftToScan : images;
+async function generateThumbnails(images) {
+    if (! fs.existsSync(disjsThumbnailPath)) {
+        fs.mkdirSync(disjsThumbnailPath)
+    }
 
-    let children            = [];
-    const startTimeStamp    = new Date();
-    const progress          = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
+    const chunks          = chunkGenerator(images, Math.ceil(images.length / threads));
+    let childrenStillBusy = chunks.length;
 
+    return new Promise((resolve) => {
+        chunks.forEach((chunk) => {
+            const child = fork(`${__dirname}/thumbnail-generator-child.js`);
 
-    console.log(`Starting scan using ${threads} thread(s)`);
-    progress.start(progressTotal);
-    progress.update(progressCounter);
+            child.send({ type: 'begin', images: chunk, destinationPath: disjsThumbnailPath });
+            child.on("message", (data) => {
+                if (data.type === 'finished') {
+                    childrenStillBusy--;
 
-    for (let threadIndex = 0; threadIndex < threads; threadIndex++) {
-        // const child = fork(`${__dirname}/scanner-child.js`, { execArgv:["--prof"] });
-        const child = fork(`${__dirname}/scanner-child.js`);
-
-        children[threadIndex] = child;
-
-        child.on("message",(data) => {
-            if (data.type === 'result') {
-                alreadyScannedFiles.push(data.files);
-
-                if (data.misMatchPercentage < 50) {
-                    duplicates.push({ files: data.files, misMatchPercentage: data.misMatchPercentage });
+                    child.kill();
                 }
-            } else if (data.type === 'finished') {
-                progressCounter += 1
-                progress.update(progressCounter);
+            });
+        });
 
-                currentlyScanning.some((currentScan, index) => {
-                    if (
-                        currentScan.path === data.file.path &&
-                        currentScan.hash === data.file.hash
-                    ) {
-                        currentlyScanning.splice(index, 1);
-                    }
-                })
-
-                sendNewCompareTaskToChild(child);
+        setInterval(() => {
+            if (childrenStillBusy === 0) {
+                resolve();
             }
-        });
-        sendNewCompareTaskToChild(child);
-    }
-
-    const waitForCompletion = setInterval(() => {
-        const hasActiveChild = children.find((child) => {
-            return ! child.killed;
-        }) !== undefined;
-
-        if (! hasActiveChild) {
-            clearInterval(waitForCompletion);
-            //clearInterval(writeToSessionFile);
-            progress.stop();
-
-            console.log(`Duplicates:\n${JSON.stringify(duplicates)}`);
-
-            let timeTook = (new Date().getTime() - startTimeStamp.getTime());
-            console.log(`Scan took ${timeTook}ms`);
-        }
-    }, 250);
-
-    function sendNewCompareTaskToChild(child) {
-        let imageToCheck = imagesLeftToScan[0];
-
-        if (! imageToCheck) {
-            console.log(`No more work left, killing thread`);
-            child.kill();
-
-            return;
-        }
-
-        imagesLeftToScan.splice(0, 1);
-        currentlyScanning.push(imageToCheck);
-
-        child.send({
-            type: 'checkfile',
-            allImages: images,
-            alreadyScannedFiles: alreadyScannedFiles,
-            imageToCheck: imageToCheck
-        });
-    }
+        }, 500);
+    });
 }
+
+async function scanImagesForDuplicates(images = []) {
+    return new Promise((resolve, reject) => {
+        const imagesMapped = images.map((image) => ({
+            originalPath: image.path,
+            pathToUse: path.join(disjsThumbnailPath, `${image.hash}.jpg`),
+            hash: image.hash
+        }));
+
+        const imageCombinations      = generateImageCombinations(imagesMapped);
+        const startTimeStamp         = new Date();
+        const chunks                 = chunkGenerator(imageCombinations, Math.ceil(imageCombinations.length / threads));
+        let scanImagesResults        = [];
+        let childrenStillBusy        = chunks.length;
+        let combinationsScannedCount = [];
+
+        chunks.forEach((chunk, index) => {
+            const child = fork(`${__dirname}/scanner-child.js`);
+
+            child.send({ type: "begin", imageCombinations: chunk });
+            child.on("message", (data) => {
+                switch (data.type) {
+                    case "finished":
+                        scanImagesResults = scanImagesResults.concat(data.result)
+                        childrenStillBusy--;
+                        child.kill();
+
+                        break;
+                    case "progress":
+                        combinationsScannedCount[index] = data.scannedCombinations;
+
+                        break;
+                }
+            });
+        });
+
+        const scanInterval = setInterval(() => {
+            if (childrenStillBusy === 0) {
+                const timeTook = (new Date().getTime() - startTimeStamp.getTime());
+
+                clearInterval(scanInterval);
+                resolve({ results: scanImagesResults, timeTook: timeTook });
+            }
+
+            const currentProgress      = combinationsScannedCount.reduce((accumulator, a) => accumulator + a, 0);
+            const progressAsPercentage = currentProgress / imageCombinations.length * 100;
+            console.log(`${currentProgress} / ${imageCombinations.length} (${progressAsPercentage.toFixed(1)}%)`);
+        }, 500);
+    });
+}
+
+function generateImageCombinations(images) {
+    return images.flatMap(
+        (v, i) => images.slice(i+1).map( w => [v, w])
+    ).filter((imageCombination) => imageCombination[0].originalPath !== imageCombination[1].originalPath);
+}
+
+const chunkGenerator = (array, chunk_size) => Array(Math.ceil(array.length / chunk_size)).fill().map((_, index) => index * chunk_size).map(begin => array.slice(begin, begin + chunk_size));
