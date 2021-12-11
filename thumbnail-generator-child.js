@@ -1,9 +1,8 @@
-const fs     = require('fs');
-const path   = require('path');
-const sharp  = require('sharp');
+const path  = require('path');
+const sharp = require('sharp');
 
 async function hashImages(imagesToCompress, destinationPath) {
-    for (let index = 0; index < imagesToCompress.length; index++) {
+    for(let index = 0; index < imagesToCompress.length; index++) {
         const image = imagesToCompress[index];
 
         await sharp(image.path)
@@ -12,7 +11,7 @@ async function hashImages(imagesToCompress, destinationPath) {
                 width: 200,
                 height: 200
             })
-            .toFile(path.join(destinationPath, `${image.hash}.jpg`))
+            .toFile(path.join(destinationPath, `${image.hash}.jpg`));
     }
 }
 

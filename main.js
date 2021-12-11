@@ -84,11 +84,11 @@ addHashToImagesList(images, threads)
         // todo: hier eerst kijken naar hash duplicates en die er uit filteren
         generateThumbnails(imagesHashed)
             .then(() => {
-                console.log('Scanning for duplicates');
+                console.log('Scanning for duplicates (It might stall for the first couple seconds because of image preloading)');
 
                 scanImagesForDuplicates(imagesHashed)
                     .then((result) => {
-                        const filteredResults = result.results.filter((resultItem) => resultItem.misMatchPercentage < 50);
+                        const filteredResults = result.results.filter((resultItem) => resultItem.misMatchPercentage < 20);
 
                         if (filteredResults.length === 0) {
                             console.log(`Scanning took ${result.timeTook}ms`);

@@ -1,12 +1,15 @@
 const resemble = require('resemblejs');
 const fs       = require('fs');
 
+let imagesPreloaded = [];
+
 async function scanForDuplicates(imageCombinations = []) {
     let combinationMismatchResults = [];
 
+    preloadImages(imageCombinations);
     for (let combinationIndex = 0; combinationIndex < imageCombinations.length; combinationIndex++) {
         const imageCombination = imageCombinations[combinationIndex];
-        const imageData        = [fs.readFileSync(imageCombination[0].pathToUse), fs.readFileSync(imageCombination[1].pathToUse)]; // todo: optimize this line so it doesn't require as much disk IO
+        const imageData        = [imagesPreloaded[imageCombination[0].pathToUse], imagesPreloaded[imageCombination[1].pathToUse]]; // todo: optimize this line so it doesn't require as much disk IO
         let misMatchPercentage = 0;
 
         await resemble(imageData[0])
@@ -28,6 +31,17 @@ async function scanForDuplicates(imageCombinations = []) {
     }
 
     return combinationMismatchResults;
+}
+
+function preloadImages(imageCombinations = []) {
+    imagesPreloaded = [];
+
+    for (let combinationIndex = 0; combinationIndex < imageCombinations.length; combinationIndex++) {
+        const imageCombination = imageCombinations[combinationIndex];
+
+        imagesPreloaded[imageCombination[0].pathToUse] = fs.readFileSync(imageCombination[0].pathToUse);
+        imagesPreloaded[imageCombination[1].pathToUse] = fs.readFileSync(imageCombination[1].pathToUse);
+    }
 }
 
 process.on("message", async (msg) => {
