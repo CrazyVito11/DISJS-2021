@@ -37,22 +37,7 @@ In this example, we tell the application to scan the `/home/user/example` direct
 ### Threshold
 TODO: Implement and document this feature
 
-### Session recovery
-TODO: Implement and document feature
-
-- Put session file in the searching folder instead of project root
-- On startup check if session file is available
-- Remove session file when done scanning
-- Make auto save timer adjustable
-
-### Full size image scan
-TODO: Implement thumbnail generation by default and document feature
-
-
-
 ### Todo
-- Paths relatief maken (voor het geval dat de map is verplaatst)
-- Session file functionaliteit implementeren
 - Van te voren de bekende duplicates er uit filteren (hash matched, ignored combinations)
 - Child processes verplaatsen naar losse map en hernoemen
 

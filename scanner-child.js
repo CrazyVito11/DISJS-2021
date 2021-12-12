@@ -9,18 +9,22 @@ async function scanForDuplicates(imageCombinations = []) {
     preloadImages(imageCombinations);
     for (let combinationIndex = 0; combinationIndex < imageCombinations.length; combinationIndex++) {
         const imageCombination = imageCombinations[combinationIndex];
-        const imageData        = [imagesPreloaded[imageCombination[0].pathToUse], imagesPreloaded[imageCombination[1].pathToUse]]; // todo: optimize this line so it doesn't require as much disk IO
+        const imageData        = [imagesPreloaded[imageCombination.combinations[0].pathToUse], imagesPreloaded[imageCombination.combinations[1].pathToUse]]; // todo: optimize this line so it doesn't require as much disk IO
         let misMatchPercentage = 0;
 
-        await resemble(imageData[0])
-            .compareTo(imageData[1])
-            .scaleToSameSize()
-            .onComplete((data) => {
-                misMatchPercentage = parseFloat(data.misMatchPercentage);
-            });
+        if (! imageCombination.misMatchPercentage) {
+            await resemble(imageData[0])
+                .compareTo(imageData[1])
+                .scaleToSameSize()
+                .onComplete((data) => {
+                    misMatchPercentage = parseFloat(data.misMatchPercentage);
+                });
+        } else {
+            misMatchPercentage = imageCombination.misMatchPercentage;
+        }
 
         combinationMismatchResults.push({
-            combination: imageCombination,
+            combination: imageCombination.combinations,
             misMatchPercentage: misMatchPercentage,
         });
 
@@ -39,8 +43,8 @@ function preloadImages(imageCombinations = []) {
     for (let combinationIndex = 0; combinationIndex < imageCombinations.length; combinationIndex++) {
         const imageCombination = imageCombinations[combinationIndex];
 
-        imagesPreloaded[imageCombination[0].pathToUse] = fs.readFileSync(imageCombination[0].pathToUse);
-        imagesPreloaded[imageCombination[1].pathToUse] = fs.readFileSync(imageCombination[1].pathToUse);
+        imagesPreloaded[imageCombination.combinations[0].pathToUse] = fs.readFileSync(imageCombination.combinations[0].pathToUse);
+        imagesPreloaded[imageCombination.combinations[1].pathToUse] = fs.readFileSync(imageCombination.combinations[1].pathToUse);
     }
 }
 

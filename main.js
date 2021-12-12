@@ -4,6 +4,9 @@ const cliProgress = require('cli-progress');
 const { fork }    = require('child_process');
 const yargs       = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
+const uuid        = require('uuid');
+const SparkMD5    = require('spark-md5');
+const helpers     = require('./helpers');
 const argv        = yargs(hideBin(process.argv)).argv;
 
 const directoryToScan = argv._[0];
@@ -19,22 +22,17 @@ if (! fs.existsSync(directoryToScan)) {
     return;
 }
 
-const disjsFolderName                = ".disjs";                                               // Main disjs folder name
-const disjsFolderPath                = path.join(directoryToScan, `/${disjsFolderName}`);      // Main disjs folder where disjs data is stored
-const disjsThumbnailPath             = path.join(disjsFolderPath, "/thumbnails");              // Folder where the thumbnail versions are stored of the images
-const disjsNotDuplicatesFilePath     = path.join(disjsFolderPath, "/not_duplicates.json");     // Image combinations that are scanned before and are known to not be duplicates
-const disjsIgnoredDuplicatesFilePath = path.join(disjsFolderPath, "/ignored_duplicates.json"); // Image combinations that the user said are not duplicates
-const disjsSessionFilePath           = path.join(disjsFolderPath, "/session.json");            // Optional restore file in case the application crashes mid scan
-if (! fs.existsSync(disjsFolderPath)) {
-    fs.mkdirSync(disjsFolderPath);
+global.disjsFolderName                  = ".disjs";                                                 // Name for the main DISJS folder
+global.disjsFolderPath                  = path.join(directoryToScan, `/${global.disjsFolderName}`); // Main DISJS folder where DISJS data is stored
+global.disjsThumbnailPath               = path.join(global.disjsFolderPath, "/thumbnails");         // Folder where the thumbnail versions are stored of the images
+global.disjsFilesDatabaseFilePath       = path.join(global.disjsFolderPath, "/f_db.json");          // Database file of all the registered images in that folder
+global.disjsScannedCombinationsFilePath = path.join(global.disjsFolderPath, "/sc_db.json");         // Image combinations that we have scanned before
+global.disjsIgnoredCombinationsFilePath = path.join(global.disjsFolderPath, "/ic_db.json");         // Image combinations that the user said are not duplicates
+
+if (!fs.existsSync(global.disjsFolderPath)) {
+    fs.mkdirSync(global.disjsFolderPath);
 }
 
-let sessionData = null;
-if (fs.existsSync(disjsSessionFilePath)) {
-    console.log('Reading session file...');
-    //sessionData = JSON.parse(fs.readFileSync(disjsSessionFilePath));
-    console.log('Session file loaded');
-}
 
 let threads = 4;
 if (argv.threads) {
@@ -45,142 +43,82 @@ if (argv.threads) {
     }
 }
 
-let images               = [];
-const supportedFiletypes = [
-    '.jpeg',
-    '.png',
-    '.gif',
-    '.jpg',
-    '.bmp',
-];
+let filesDb               = [];
+let scannedCombinationsDb = [];
+let ignoredCombinationsDb = [];
+if (fs.existsSync(global.disjsFilesDatabaseFilePath)) {
+    console.log('Reading database...');
 
-if (! sessionData) {
-    console.log(`Searching for images in ${directoryToScan}`);
+    filesDb = JSON.parse(fs.readFileSync(global.disjsFilesDatabaseFilePath, "utf8"));
 
-    (function searchDirectory(dir = directoryToScan) {
-        let files = fs.readdirSync(dir);
-        for(let file of files) {
-            if (file === disjsFolderName) continue;
-
-            let stat = fs.lstatSync(path.join(dir, file));
-            if (stat.isDirectory()) {
-                searchDirectory(path.join(dir, file));
-            } else {
-                if (supportedFiletypes.includes(path.extname(file).toLowerCase())) {
-                    images.push(path.join(dir, file));
-                }
-            }
-        }
-    })();
-
-    console.log(`Found ${images.length} image(s)`);
-}
-
-console.log(`Generating hashes`);
-addHashToImagesList(images, threads)
-    .then((imagesHashed) => {
-        console.log('Generating thumbnails');
-
-        // todo: hier eerst kijken naar hash duplicates en die er uit filteren
-        generateThumbnails(imagesHashed)
-            .then(() => {
-                console.log('Scanning for duplicates (It might stall for the first couple seconds because of image preloading)');
-
-                scanImagesForDuplicates(imagesHashed)
-                    .then((result) => {
-                        const filteredResults = result.results.filter((resultItem) => resultItem.misMatchPercentage < 20);
-
-                        if (filteredResults.length === 0) {
-                            console.log(`Scanning took ${result.timeTook}ms`);
-                            console.log("No duplicates found ;)");
-
-                            return process.exit();
-                        }
-
-                        const resultsTextFilePath = path.join(disjsFolderPath, "/result.txt");
-                        let resultsAsText         = `Scanning took ${result.timeTook}ms\nThe following ${filteredResults.length} file(s) might be duplicates:\n`;
-                        filteredResults.forEach((resultItem) => {
-                            resultsAsText += `\n-\n   File #1: ${resultItem.combination[0].originalPath}\n   File #2: ${resultItem.combination[1].originalPath}\n   Mismatch: ${resultItem.misMatchPercentage}%`;
-                        });
-
-                        fs.writeFileSync(resultsTextFilePath, resultsAsText);
-                        console.log(`${resultsAsText}\n\nYou can also find the results in ${resultsTextFilePath}`);
-
-                        process.exit();
-                    });
-            });
-    })
-
-
-
-// const writeToSessionFile = setInterval(async () => {
-//     const fileContent = {
-//         dts: directoryToScan,
-//         p: {
-//             total: progressTotal,
-//             current: progressCounter
-//         },
-//         cs: currentlyScanning,
-//         ilts: imagesLeftToScan,
-//         d: duplicates,
-//         asf: alreadyScannedFiles
-//     };
-//
-//     fs.writeFileSync(path.join(__dirname, 'session.json'), JSON.stringify(fileContent));
-// }, 60000);
-
-
-
-
-
-
-async function addHashToImagesList(images, threads) {
-    let imagesHashed = [];
-
-    return new Promise((resolve) => {
-        for(let threadIndex = 0; threadIndex < threads; threadIndex++) {
-            const child       = fork(`${__dirname}/hasher-child.js`);
-            const chunkSize   = Math.ceil(images.length / threads);
-            const offset      = Math.floor(threadIndex * chunkSize);
-            const chunkImages = images.slice(offset, offset + chunkSize);
-
-            if (!chunkImages.length) {
-                child.kill();
-
-                continue;
-            }
-
-            child.send({ type: 'begin', images: chunkImages });
-            child.on("message", (data) => {
-                if (data.type === 'finished') {
-                    imagesHashed = imagesHashed.concat(data.files);
-
-                    child.kill();
-                }
-            });
-        }
-
-        setInterval(() => {
-            if (imagesHashed.length === images.length) {
-                resolve(imagesHashed);
-            }
-        }, 100)
-    });
-}
-
-async function generateThumbnails(images) {
-    if (! fs.existsSync(disjsThumbnailPath)) {
-        fs.mkdirSync(disjsThumbnailPath)
+    if (fs.existsSync(global.disjsScannedCombinationsFilePath)) {
+        scannedCombinationsDb = JSON.parse(fs.readFileSync(global.disjsScannedCombinationsFilePath, "utf8"));
     }
 
-    const chunks          = chunkGenerator(images, Math.ceil(images.length / threads));
+    if (fs.existsSync(global.disjsIgnoredCombinationsFilePath)) {
+        ignoredCombinationsDb = JSON.parse(fs.readFileSync(global.disjsIgnoredCombinationsFilePath, "utf8"));
+    }
+
+    console.log('Database loaded');
+}
+
+console.log(`Searching for images in ${directoryToScan}`);
+
+const images = helpers.scanDirectoryForImages(directoryToScan);
+
+console.log(`Found ${images.length} image(s)`);
+console.log("Syncing database...");
+
+syncFilesDb(images);
+
+console.log("Database synced");
+
+
+console.log('Generating thumbnails...');
+
+generateThumbnails(filesDb)
+    .then(() => {
+        console.log('Scanning for duplicates... (It might stall for the first couple seconds because of image preloading)');
+
+        scanImagesForDuplicates(filesDb)
+            .then((result) => {
+                const filteredResults = result.results.filter((resultItem) => resultItem.misMatchPercentage < 20);
+
+                syncScannedCombinationsDb(result.results);
+
+                if (filteredResults.length === 0) {
+                    console.log(`Scanning took ${result.timeTook}ms`);
+                    console.log("No duplicates found ;)");
+
+                    return process.exit();
+                }
+
+                const resultsTextFilePath = path.join(global.disjsFolderPath, "/result.txt");
+                let resultsAsText         = `Scanning took ${result.timeTook}ms\nThe following ${filteredResults.length} file(s) might be duplicates:\n`;
+                filteredResults.forEach((resultItem) => {
+                    resultsAsText += `\n-\n   File #1: ${resultItem.combination[0].originalPath}\n   File #2: ${resultItem.combination[1].originalPath}\n   Mismatch: ${resultItem.misMatchPercentage}%`;
+                });
+
+                fs.writeFileSync(resultsTextFilePath, resultsAsText);
+                console.log(`${resultsAsText}\n\nYou can also find the results in ${resultsTextFilePath}`);
+
+                process.exit();
+            });
+    });
+
+async function generateThumbnails(images) {
+    if (! fs.existsSync(global.disjsThumbnailPath)) {
+        fs.mkdirSync(global.disjsThumbnailPath)
+    }
+
+    const chunks          = helpers.chunkGenerator(images, Math.ceil(images.length / threads));
     let childrenStillBusy = chunks.length;
 
     return new Promise((resolve) => {
         chunks.forEach((chunk) => {
             const child = fork(`${__dirname}/thumbnail-generator-child.js`);
 
-            child.send({ type: 'begin', images: chunk, destinationPath: disjsThumbnailPath });
+            child.send({ type: 'begin', images: chunk, destinationPath: global.disjsThumbnailPath });
             child.on("message", (data) => {
                 if (data.type === 'finished') {
                     childrenStillBusy--;
@@ -199,16 +137,30 @@ async function generateThumbnails(images) {
 }
 
 async function scanImagesForDuplicates(images = []) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
         const imagesMapped = images.map((image) => ({
-            originalPath: image.path,
-            pathToUse: path.join(disjsThumbnailPath, `${image.hash}.jpg`),
-            hash: image.hash
+            uid: image.uid,
+            originalPath: image.p,
+            pathToUse: path.join(global.disjsThumbnailPath, `${image.uid}.jpg`),
+            hash: image.h
         }));
 
-        const imageCombinations      = generateImageCombinations(imagesMapped);
+        const imageCombinations = helpers.generateImageCombinations(imagesMapped).map((combination) => {
+            const scannedCombinationIndex = scannedCombinationsDb.findIndex((scannedCombination) =>
+                (
+                    (scannedCombination.c[0] === combination[0].uid && scannedCombination.c[1] === combination[1].uid) ||
+                    (scannedCombination.c[0] === combination[1].uid && scannedCombination.c[1] === combination[0].uid)
+                )
+            );
+
+            return {
+                combinations: [combination[0], combination[1]],
+                misMatchPercentage: scannedCombinationIndex !== -1 ? scannedCombinationsDb[scannedCombinationIndex].m : null
+            }
+        });
+
         const startTimeStamp         = new Date();
-        const chunks                 = chunkGenerator(imageCombinations, Math.ceil(imageCombinations.length / threads));
+        const chunks                 = helpers.chunkGenerator(imageCombinations, Math.ceil(imageCombinations.length / threads));
         let scanImagesResults        = [];
         let childrenStillBusy        = chunks.length;
         let combinationsScannedCount = [];
@@ -248,10 +200,46 @@ async function scanImagesForDuplicates(images = []) {
     });
 }
 
-function generateImageCombinations(images) {
-    return images.flatMap(
-        (v, i) => images.slice(i+1).map( w => [v, w])
-    ).filter((imageCombination) => imageCombination[0].originalPath !== imageCombination[1].originalPath);
+function syncFilesDb(files = []) {
+    // Add new items to the database
+    files.forEach((file) => {
+        if (! filesDb.find((findFile) => findFile.p === file)) {
+            filesDb.push({
+                uid: uuid.v4(),
+                p: file,
+                h: SparkMD5.hash(fs.readFileSync(file))
+            });
+        }
+    });
+    // todo: add multi-threading support to improve performance of adding new files to database
+
+
+    // Remove files from database that no longer exist in the folder
+    let fileDbIndex = filesDb.length
+    while (fileDbIndex--) {
+        const fileDb = filesDb[fileDbIndex];
+
+        if (! files.find((findFile) => fileDb.p === findFile)) {
+            filesDb.splice(fileDbIndex, 1);
+        }
+    }
+
+    fs.writeFileSync(global.disjsFilesDatabaseFilePath, JSON.stringify(filesDb));
 }
 
-const chunkGenerator = (array, chunk_size) => Array(Math.ceil(array.length / chunk_size)).fill().map((_, index) => index * chunk_size).map(begin => array.slice(begin, begin + chunk_size));
+function syncScannedCombinationsDb(combinations = []) {
+    combinations.forEach((combinationItem) => {
+        const combinationDbIndex = scannedCombinationsDb.findIndex((scannedCombination) =>
+            (
+                (scannedCombination.c[0] === combinationItem.combination[0].uid && scannedCombination.c[1] === combinationItem.combination[1].uid) ||
+                (scannedCombination.c[0] === combinationItem.combination[1].uid && scannedCombination.c[1] === combinationItem.combination[0].uid)
+            )
+        );
+
+        if (combinationDbIndex === -1) {
+            scannedCombinationsDb.push({ c: [combinationItem.combination[0].uid, combinationItem.combination[1].uid], m: combinationItem.misMatchPercentage });
+        }
+    })
+
+    fs.writeFileSync(global.disjsScannedCombinationsFilePath, JSON.stringify(scannedCombinationsDb));
+}
