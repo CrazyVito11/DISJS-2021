@@ -1,7 +1,8 @@
 const resemble = require('resemblejs');
 const fs       = require('fs');
 
-let imagesPreloaded = [];
+let imageCombinations = [];
+let imagesPreloaded   = [];
 
 async function scanForDuplicates(imageCombinations = []) {
     let combinationMismatchResults = [];
@@ -9,7 +10,7 @@ async function scanForDuplicates(imageCombinations = []) {
     preloadImages(imageCombinations);
     for (let combinationIndex = 0; combinationIndex < imageCombinations.length; combinationIndex++) {
         const imageCombination = imageCombinations[combinationIndex];
-        const imageData        = [imagesPreloaded[imageCombination.combinations[0].pathToUse], imagesPreloaded[imageCombination.combinations[1].pathToUse]]; // todo: optimize this line so it doesn't require as much disk IO
+        const imageData        = [imagesPreloaded[imageCombination.combinations[0].pathToUse], imagesPreloaded[imageCombination.combinations[1].pathToUse]];
         let misMatchPercentage = 0;
 
         if (! imageCombination.misMatchPercentage) {
@@ -50,8 +51,10 @@ function preloadImages(imageCombinations = []) {
 
 process.on("message", async (msg) => {
     if (msg.type === 'begin') {
-        const result = await scanForDuplicates(msg.imageCombinations);
+        const result = await scanForDuplicates(imageCombinations);
 
         process.send({ type: 'finished', result: result });
+    } else if (msg.type === 'combination_chunk') {
+        imageCombinations = imageCombinations.concat(msg.imageCombinationChunk);
     }
 });

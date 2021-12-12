@@ -56,6 +56,7 @@ if (fs.existsSync(global.disjsFilesDatabaseFilePath)) {
     }
 
     if (fs.existsSync(global.disjsIgnoredCombinationsFilePath)) {
+        // todo: ignored combinations implementeren
         ignoredCombinationsDb = JSON.parse(fs.readFileSync(global.disjsIgnoredCombinationsFilePath, "utf8"));
     }
 
@@ -78,7 +79,7 @@ console.log('Generating thumbnails...');
 
 generateThumbnails(filesDb)
     .then(() => {
-        console.log('Scanning for duplicates... (It might stall for the first couple seconds because of image preloading)');
+        console.log('Scanning for duplicates... (It might stall for the first couple seconds because of image preloading and chunking)');
 
         scanImagesForDuplicates(filesDb)
             .then((result) => {
@@ -168,7 +169,12 @@ async function scanImagesForDuplicates(images = []) {
         chunks.forEach((chunk, index) => {
             const child = fork(`${__dirname}/scanner-child.js`);
 
-            child.send({ type: "begin", imageCombinations: chunk });
+            // We have to chunk the combinations for large collections
+            helpers.chunkGenerator(chunk, 50000).forEach((combinationChunk) => {
+                child.send({ type: "combination_chunk", imageCombinationChunk: combinationChunk });
+            });
+
+            child.send({ type: "begin" });
             child.on("message", (data) => {
                 switch (data.type) {
                     case "finished":
